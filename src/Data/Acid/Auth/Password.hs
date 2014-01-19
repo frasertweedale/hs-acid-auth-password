@@ -26,24 +26,54 @@ import Control.Applicative
 import Control.Monad.Reader
 import Control.Monad.State
 
+import Crypto.Scrypt
 import Data.Acid
 import qualified Data.Map as M
 import Data.SafeCopy
 
-type Credentials = (String, String)  -- username, password
+newtype SafeSalt = SafeSalt Salt
 
-newtype CredentialsDB = CredentialsDB { allCredentials :: M.Map String String }
+instance SafeCopy SafeSalt where
+  putCopy (SafeSalt (Salt s)) = putCopy s
+  getCopy = contain $ fmap (SafeSalt . Salt) safeGet
+
+
+newtype SafePass = SafePass Pass
+
+instance SafeCopy SafePass where
+  putCopy (SafePass (Pass p)) = putCopy p
+  getCopy = contain $ fmap (SafePass . Pass) safeGet
+
+
+newtype SafeEncryptedPass = SafeEncryptedPass
+  { getSafeEncryptedPass :: EncryptedPass
+  }
+  deriving (Show)
+
+instance SafeCopy SafeEncryptedPass where
+  putCopy (SafeEncryptedPass (EncryptedPass s)) = putCopy s
+  getCopy = contain $ fmap (SafeEncryptedPass . EncryptedPass) safeGet
+
+
+type Credentials = (String, SafePass)  -- username, password
+
+newtype CredentialsDB = CredentialsDB
+  { allCredentials :: M.Map String SafeEncryptedPass }
   deriving (Show, Typeable)
 
 emptyCredentialsDB :: CredentialsDB
 emptyCredentialsDB = CredentialsDB M.empty
 
-addCredentials :: Credentials -> Update CredentialsDB ()
-addCredentials (k, v) = modify (CredentialsDB . M.insert k v . allCredentials)
+
+addCredentials :: SafeSalt -> Credentials -> Update CredentialsDB ()
+addCredentials (SafeSalt salt) (user, SafePass pass) =
+  let hash = SafeEncryptedPass $ encryptPass' salt pass
+  in modify (CredentialsDB . M.insert user hash . allCredentials)
 
 checkCredentials :: Credentials -> Query CredentialsDB Bool
-checkCredentials (k, v) =
-  maybe False (== v) . M.lookup k . allCredentials <$> ask
+checkCredentials (user, SafePass pass) =
+  maybe False (verifyPass' pass . getSafeEncryptedPass) . M.lookup user . allCredentials <$> ask
+
 
 $(deriveSafeCopy 0 'base ''CredentialsDB)
 $(makeAcidic ''CredentialsDB ['addCredentials, 'checkCredentials])
