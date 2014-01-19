@@ -45,9 +45,7 @@ instance SafeCopy SafePass where
   getCopy = contain $ fmap (SafePass . Pass) safeGet
 
 
-newtype SafeEncryptedPass = SafeEncryptedPass
-  { getSafeEncryptedPass :: EncryptedPass
-  }
+newtype SafeEncryptedPass = SafeEncryptedPass EncryptedPass
   deriving (Show)
 
 instance SafeCopy SafeEncryptedPass where
@@ -71,8 +69,9 @@ addCredentials (SafeSalt salt) (user, SafePass pass) =
   in modify (CredentialsDB . M.insert user hash . allCredentials)
 
 checkCredentials :: Credentials -> Query CredentialsDB Bool
-checkCredentials (user, SafePass pass) =
-  maybe False (verifyPass' pass . getSafeEncryptedPass) . M.lookup user . allCredentials <$> ask
+checkCredentials (user, pass) =
+  let verify (SafePass p) (SafeEncryptedPass h) = verifyPass' p h
+  in maybe False (verify pass) . M.lookup user . allCredentials <$> ask
 
 
 $(deriveSafeCopy 0 'base ''CredentialsDB)
