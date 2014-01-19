@@ -14,11 +14,35 @@
 -- You should have received a copy of the GNU Affero General Public License
 -- along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+-- |
+--
+-- @
+--import Data.Acid
+--import Data.Acid.Auth.Password
+--
+--main :: IO ()
+--main = do
+--  db <- openLocalState emptyCredentialsDB
+--  checkCredentials db "bob@example.com" (Pass "secret") >>= print
+--  salt <- newSalt
+--  updateCredentials db salt "bob@example.com" (Pass "secret")
+--  checkCredentials db "bob@example.com" (Pass "secret") >>= print
+--  checkCredentials db "bob@example.com" (Pass "wrong") >>= print
+--  checkCredentials db "not bob" (Pass "secret") >>= print
+--  createCheckpoint db
+--  closeAcidState db
+-- @
+
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Data.Acid.Auth.Password where
+module Data.Acid.Auth.Password
+  (
+    emptyCredentialsDB
+  , updateCredentials
+  , checkCredentials
+  ) where
 
 import Data.Typeable
 
@@ -28,51 +52,36 @@ import Control.Monad.State
 
 import Crypto.Scrypt
 import Data.Acid
+import qualified Data.ByteString as B
 import qualified Data.Map as M
 import Data.SafeCopy
 
-newtype SafeSalt = SafeSalt Salt
-
-instance SafeCopy SafeSalt where
-  putCopy (SafeSalt (Salt s)) = putCopy s
-  getCopy = contain $ fmap (SafeSalt . Salt) safeGet
-
-
-newtype SafePass = SafePass Pass
-
-instance SafeCopy SafePass where
-  putCopy (SafePass (Pass p)) = putCopy p
-  getCopy = contain $ fmap (SafePass . Pass) safeGet
-
-
-newtype SafeEncryptedPass = SafeEncryptedPass EncryptedPass
-  deriving (Show)
-
-instance SafeCopy SafeEncryptedPass where
-  putCopy (SafeEncryptedPass (EncryptedPass s)) = putCopy s
-  getCopy = contain $ fmap (SafeEncryptedPass . EncryptedPass) safeGet
-
-
-type Credentials = (String, SafePass)  -- username, password
 
 newtype CredentialsDB = CredentialsDB
-  { allCredentials :: M.Map String SafeEncryptedPass }
+  { allCredentials :: M.Map String B.ByteString }
   deriving (Show, Typeable)
 
 emptyCredentialsDB :: CredentialsDB
 emptyCredentialsDB = CredentialsDB M.empty
 
 
-addCredentials :: SafeSalt -> Credentials -> Update CredentialsDB ()
-addCredentials (SafeSalt salt) (user, SafePass pass) =
-  let hash = SafeEncryptedPass $ encryptPass' salt pass
-  in modify (CredentialsDB . M.insert user hash . allCredentials)
+updateCrypt :: String -> B.ByteString -> Update CredentialsDB ()
+updateCrypt user crypt =
+  modify (CredentialsDB . M.insert user crypt . allCredentials)
 
-checkCredentials :: Credentials -> Query CredentialsDB Bool
-checkCredentials (user, pass) =
-  let verify (SafePass p) (SafeEncryptedPass h) = verifyPass' p h
-  in maybe False (verify pass) . M.lookup user . allCredentials <$> ask
+lookupCrypt :: String -> Query CredentialsDB (Maybe B.ByteString)
+lookupCrypt user = M.lookup user . allCredentials <$> ask
 
 
 $(deriveSafeCopy 0 'base ''CredentialsDB)
-$(makeAcidic ''CredentialsDB ['addCredentials, 'checkCredentials])
+$(makeAcidic ''CredentialsDB ['updateCrypt, 'lookupCrypt])
+
+
+updateCredentials :: AcidState (EventState UpdateCrypt) -> Salt -> String -> Pass -> IO ()
+updateCredentials db salt user pass =
+  update db (UpdateCrypt user $ getEncryptedPass $ encryptPass' salt pass)
+
+checkCredentials :: AcidState (EventState LookupCrypt) -> String -> Pass -> IO Bool
+checkCredentials db user pass =
+  let verify crypt = verifyPass' pass (EncryptedPass crypt)
+  in fmap (maybe False verify) (query db (LookupCrypt user))
