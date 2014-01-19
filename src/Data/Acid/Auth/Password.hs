@@ -29,6 +29,7 @@
 --  checkCredentials db "bob@example.com" (Pass "secret") >>= print
 --  checkCredentials db "bob@example.com" (Pass "wrong") >>= print
 --  checkCredentials db "not bob" (Pass "secret") >>= print
+--  deleteCredentials db "bob@example.com"
 --  createCheckpoint db
 --  closeAcidState db
 -- @
@@ -41,6 +42,7 @@ module Data.Acid.Auth.Password
   (
     emptyCredentialsDB
   , updateCredentials
+  , deleteCredentials
   , checkCredentials
   ) where
 
@@ -69,17 +71,23 @@ updateCrypt :: String -> B.ByteString -> Update CredentialsDB ()
 updateCrypt user crypt =
   modify (CredentialsDB . M.insert user crypt . allCredentials)
 
+deleteCrypt :: String -> Update CredentialsDB ()
+deleteCrypt user = modify (CredentialsDB . M.delete user . allCredentials)
+
 lookupCrypt :: String -> Query CredentialsDB (Maybe B.ByteString)
 lookupCrypt user = M.lookup user . allCredentials <$> ask
 
 
 $(deriveSafeCopy 0 'base ''CredentialsDB)
-$(makeAcidic ''CredentialsDB ['updateCrypt, 'lookupCrypt])
+$(makeAcidic ''CredentialsDB ['updateCrypt, 'deleteCrypt, 'lookupCrypt])
 
 
 updateCredentials :: AcidState (EventState UpdateCrypt) -> Salt -> String -> Pass -> IO ()
 updateCredentials db salt user pass =
   update db (UpdateCrypt user $ getEncryptedPass $ encryptPass' salt pass)
+
+deleteCredentials :: AcidState (EventState DeleteCrypt) -> String -> IO ()
+deleteCredentials db user = update db (DeleteCrypt user)
 
 checkCredentials :: AcidState (EventState LookupCrypt) -> String -> Pass -> IO Bool
 checkCredentials db user pass =
